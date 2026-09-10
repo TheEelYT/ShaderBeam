@@ -28,7 +28,7 @@ public:
         int   scanDirection { 1 };
 
         // CPU-calculated
-        float effectiveFramesPerHz { 4.001f };
+        float effectiveFramesPerHz { 4.0f };
         float crtRasterPos { 0.0f };
         float crtHzCounter { 0.0f };
     } m_params;
@@ -88,6 +88,7 @@ public:
                      "Prevents image retention from BFI interfering with LCD voltage polarity inversion algorithm\n"
                      "- It will cause occasional stutter as it desyncs CRT refresh rate from content refresh rate.\n"
                      "- Auto-disabled on OLEDs and LCDs with odd subframe count.\n"
+                     "- The frequency slew is intentionally disabled in Beam Synchronous mode so the raster can remain phase-locked to frame updates.\n"
                      "- Adds one input frame of latency (!)",
                      &m_lcdAntiRetention,
                      0,
@@ -182,11 +183,14 @@ public:
         // Frame counter, which may be compensated by slo-mo modes (FPS_DIVISOR). Does not need to be integer divisible.
         double effectiveFrame = frameNo / (double)m_fpsDivisor;
 
-        // LCD SAVER (prevent image retention)
-        // Adds a slew to FRAMES_PER_HZ when ANTI_RETENTION is enabled and FRAMES_PER_HZ is an exact even integer.
-        // We support non-integer FRAMES_PER_HZ, so this is a magically convenient solution
+        // Authentic rolling scanout needs an exact, repeatable relationship
+        // between capture-frame boundaries and raster position. ShaderBeam's
+        // LCD anti-retention mode deliberately changes e.g. 4.0 subframes to
+        // 4.001, which makes an integer-rate renderer wrap from nearly 100%
+        // directly to roughly 25% on a four-subframe setup. Keep that legacy
+        // slew only in the legacy frame-ahead mode.
         m_params.effectiveFramesPerHz = (float)m_framesPerHz;
-        if(AntiRetentionRequired(renderContext))
+        if(!m_beamSynchronousFrameUpdates && AntiRetentionRequired(renderContext))
         {
             m_params.effectiveFramesPerHz += m_lcdInversionCompensationSlew;
         }
