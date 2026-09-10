@@ -119,14 +119,31 @@ public:
 
     bool NewInputRequired(const RenderContext& renderContext) const
     {
+        unsigned frameNo        = (renderContext.frameNo * renderContext.options.subFrames) + renderContext.subFrameNo;
+        double   effectiveFrame = frameNo / (double)m_fpsDivisor;
+
+        if(m_beamSynchronousFrameUpdates)
+        {
+            // The shader integrates every presented output over a one-frame-wide
+            // interval [fStart, fStart + 1]. That means the visible leading edge
+            // of the beam enters the NEXT CRT cycle one simulated native frame
+            // before crtHzCounter itself rolls over. Prefetch/roll the capture at
+            // that crossing so the new image begins at the beam's leading edge,
+            // rather than appearing at its trailing edge one beam-width later.
+            if(frameNo == 0)
+                return true;
+
+            double previousEffectiveFrame = (frameNo - 1) / (double)m_fpsDivisor;
+            float  nextCycle               = (float)floor((effectiveFrame + 1.0) / m_params.effectiveFramesPerHz);
+            float  previousNextCycle       = (float)floor((previousEffectiveFrame + 1.0) / m_params.effectiveFramesPerHz);
+            return nextCycle != previousNextCycle;
+        }
+
+        // Preserve ShaderBeam's original capture timing for legacy mode.
         if(renderContext.frameNo == 0)
             return renderContext.subFrameNo == 0;
 
-        // Capture only when the simulated CRT begins a new refresh cycle. The
-        // captured image then stays stable while the beam scans down/across it.
-        unsigned frameNo        = (renderContext.frameNo * renderContext.options.subFrames) + renderContext.subFrameNo;
-        double   effectiveFrame = frameNo / (double)m_fpsDivisor;
-        float    crtHzCounter   = (float)floor(effectiveFrame / m_params.effectiveFramesPerHz);
+        float crtHzCounter = (float)floor(effectiveFrame / m_params.effectiveFramesPerHz);
         return crtHzCounter != m_params.crtHzCounter;
     }
 
