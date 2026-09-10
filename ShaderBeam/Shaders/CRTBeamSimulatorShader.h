@@ -70,7 +70,7 @@ public:
                      m_scanDirections);
         AddParameter("Frame Update Mode",
                      "Controls how captured content advances while the simulated CRT raster is scanning.\n"
-                     "- Beam Synchronous: keeps frame history so the new image is painted progressively by the beam.\n"
+                     "- Beam Synchronous: the newest captured image is painted progressively by the beam while the previous image remains in the decaying phosphor region.\n"
                      "- Frame Ahead (Legacy): duplicates the newest capture across history for lower latency, so content can change globally.",
                      &m_beamSynchronousFrameUpdates,
                      0,
@@ -122,8 +122,8 @@ public:
         if(renderContext.frameNo == 0)
             return renderContext.subFrameNo == 0;
 
-        // Check at CRT-cycle boundaries so a captured frame remains stable while
-        // the beam scans it onto the simulated phosphor surface.
+        // Capture only when the simulated CRT begins a new refresh cycle. The
+        // captured image then stays stable while the beam scans down/across it.
         unsigned frameNo        = (renderContext.frameNo * renderContext.options.subFrames) + renderContext.subFrameNo;
         double   effectiveFrame = frameNo / (double)m_fpsDivisor;
         float    crtHzCounter   = (float)floor(effectiveFrame / m_params.effectiveFramesPerHz);
@@ -144,11 +144,29 @@ public:
 
     void OverrideInputs(const RenderContext& renderContext, const std::span<ID3D11ShaderResourceView*>& inputs)
     {
-        // Legacy frame-ahead mode intentionally aliases all temporal inputs to
-        // the newest capture. Beam-synchronous mode leaves the capture ring
-        // intact so the shader can keep the old image ahead of the raster.
-        if(!m_beamSynchronousFrameUpdates && !AntiRetentionRequired(renderContext))
+        if(m_beamSynchronousFrameUpdates)
         {
+            // The original Shadertoy fakes historical CRT refreshes by shifting
+            // one texture. With real captured frames its temporal labels do not
+            // line up directly with the capture ring:
+            //
+            //   pixelCurr  (iChannel0) = seam/wrap pulse
+            //   pixelPrev1 (iChannel1) = main active raster pulse
+            //   pixelPrev2 (iChannel2) = decaying phosphor from the old frame
+            //
+            // Therefore both current + active-raster samples must use the newest
+            // capture, while the decay sample must use the previous capture. This
+            // makes the new image arrive spatially with the beam instead of the
+            // entire dark phosphor field changing at the capture boundary.
+            auto newest   = inputs[0];
+            auto previous = inputs[1];
+            inputs[0] = newest;
+            inputs[1] = newest;
+            inputs[2] = previous;
+        }
+        else if(!AntiRetentionRequired(renderContext))
+        {
+            // Original ShaderBeam low-latency frame-ahead behavior.
             for(int slot = 1; slot < inputs.size(); slot++)
                 inputs[slot] = inputs[slot - 1];
         }
