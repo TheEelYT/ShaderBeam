@@ -36,6 +36,7 @@ public:
     int   m_fpsDivisor { 1 };
     int   m_lcdAntiRetention { 1 };
     float m_lcdInversionCompensationSlew { 0.001f };
+    int   m_beamSynchronousFrameUpdates { 1 };
 
     // derived
     float m_framesPerHz { 4.0f };
@@ -45,6 +46,7 @@ public:
     };
 
     const std::map<int, std::string> m_lcdAntiRetentions = { { 0, "Force Off" }, { 1, "Auto" } };
+    const std::map<int, std::string> m_frameUpdateModes = { { 0, "Frame Ahead (Legacy)" }, { 1, "Beam Synchronous" } };
 
     CRTBeamSimulatorShader()
     {
@@ -66,6 +68,14 @@ public:
                      0,
                      4,
                      m_scanDirections);
+        AddParameter("Frame Update Mode",
+                     "Controls how captured content advances while the simulated CRT raster is scanning.\n"
+                     "- Beam Synchronous: keeps frame history so the new image is painted progressively by the beam.\n"
+                     "- Frame Ahead (Legacy): duplicates the newest capture across history for lower latency, so content can change globally.",
+                     &m_beamSynchronousFrameUpdates,
+                     0,
+                     1,
+                     m_frameUpdateModes);
         // NB: this is inverted compared to original shader to be more user-friendly
         AddParameter("Slow Motion Mode",
                      "Reduced frame rate mode\n"
@@ -112,7 +122,8 @@ public:
         if(renderContext.frameNo == 0)
             return renderContext.subFrameNo == 0;
 
-        // with anti-retention on we need to check if the CRT frame counter is changing
+        // Check at CRT-cycle boundaries so a captured frame remains stable while
+        // the beam scans it onto the simulated phosphor surface.
         unsigned frameNo        = (renderContext.frameNo * renderContext.options.subFrames) + renderContext.subFrameNo;
         double   effectiveFrame = frameNo / (double)m_fpsDivisor;
         float    crtHzCounter   = (float)floor(effectiveFrame / m_params.effectiveFramesPerHz);
@@ -126,14 +137,18 @@ public:
 
     bool SupportsResync(const RenderContext& renderContext) const
     {
-        return !AntiRetentionRequired(renderContext);
+        // Skipping raster subframes can move the beam without advancing the
+        // preserved frame history, so disable automatic resync in authentic mode.
+        return !m_beamSynchronousFrameUpdates && !AntiRetentionRequired(renderContext);
     }
 
     void OverrideInputs(const RenderContext& renderContext, const std::span<ID3D11ShaderResourceView*>& inputs)
     {
-        if(!AntiRetentionRequired(renderContext))
+        // Legacy frame-ahead mode intentionally aliases all temporal inputs to
+        // the newest capture. Beam-synchronous mode leaves the capture ring
+        // intact so the shader can keep the old image ahead of the raster.
+        if(!m_beamSynchronousFrameUpdates && !AntiRetentionRequired(renderContext))
         {
-            // run shader in frame-ahead mode
             for(int slot = 1; slot < inputs.size(); slot++)
                 inputs[slot] = inputs[slot - 1];
         }
