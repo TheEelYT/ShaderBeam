@@ -163,23 +163,36 @@ public:
     {
         if(m_beamSynchronousFrameUpdates)
         {
-            // The original Shadertoy fakes historical CRT refreshes by shifting
-            // one texture. With real captured frames its temporal labels do not
-            // line up directly with the capture ring:
+            // A CRT output sample covers a one-native-frame-wide interval. During
+            // the final interval before a CRT-cycle rollover, the leading edge of
+            // that interval has already wrapped to the top of the NEXT scan while
+            // the trailing part of the OLD scan is still visible at the bottom.
             //
-            //   pixelCurr  (iChannel0) = seam/wrap pulse
-            //   pixelPrev1 (iChannel1) = main active raster pulse
-            //   pixelPrev2 (iChannel2) = decaying phosphor from the old frame
+            // NewInputRequired() deliberately rolls the capture ring at the start
+            // of this lookahead interval, so the raw ring is exactly what the
+            // original Blur Busters temporal model needs here:
             //
-            // Therefore both current + active-raster samples must use the newest
-            // capture, while the decay sample must use the previous capture. This
-            // makes the new image arrive spatially with the beam instead of the
-            // entire dark phosphor field changing at the capture boundary.
-            auto newest   = inputs[0];
-            auto previous = inputs[1];
-            inputs[0] = newest;
-            inputs[1] = newest;
-            inputs[2] = previous;
+            //   inputs[0] = next/new frame (pixelCurr; top seam / leading edge)
+            //   inputs[1] = current/old frame (pixelPrev1; rest of current beam)
+            //   inputs[2] = previous frame (pixelPrev2; older phosphor)
+            //
+            // Do NOT duplicate the newest frame during this interval or the old
+            // beam/phosphor still visible at the bottom will change prematurely.
+            float rasterFrame = m_params.crtRasterPos * m_params.effectiveFramesPerHz;
+            bool  beamLookahead = (rasterFrame + 1.0f) >= m_params.effectiveFramesPerHz;
+
+            if(!beamLookahead)
+            {
+                // Once the CRT counter has wrapped, the prefetched frame is now
+                // the active beam frame. Until the next lookahead capture arrives,
+                // duplicate it into pixelCurr and pixelPrev1 while keeping the old
+                // active frame available to pixelPrev2 for phosphor decay.
+                auto newest   = inputs[0];
+                auto previous = inputs[1];
+                inputs[0] = newest;
+                inputs[1] = newest;
+                inputs[2] = previous;
+            }
         }
         else if(!AntiRetentionRequired(renderContext))
         {
